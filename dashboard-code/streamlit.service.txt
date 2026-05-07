@@ -1,0 +1,18 @@
+[Unit]
+Description=Streamlit dashboard
+After=network.target
+
+[Service]
+User=root
+Group=root
+Type=simple
+WorkingDirectory=/mnt/test
+Environment="STREAMLIT_BROWSER_GATHER_USAGE_STATS=false"
+ExecStart=streamlit run /mnt/test/app.py --server.port 8506 --server.headless true --server.address 127.0.0.1 --server.enableCORS false -- server.enableXsrfProtection true
+ExecStop=/bin/kill -s TERM $MAINPID
+Restart=always
+RestartSec=5
+LimitNOFILE=100000
+
+[Install]
+WantedBy=multi-user.target
