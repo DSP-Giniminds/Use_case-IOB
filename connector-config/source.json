@@ -1,0 +1,36 @@
+{
+  "name": "oracle-cdc-iob096",
+  "config": {
+    "topic.prefix": "test096",
+    "schema.include.list": "C##IOB1",
+    "schema.history.internal.kafka.bootstrap.servers": "192.168.80.130:9092,192.168.80.131:9092",
+    "schema.history.internal.kafka.topic": "SRUJAN096_new_11_v3",
+    "schema.history.internal.kafka.recovery.mode": "recovery",
+
+    "connector.class": "io.debezium.connector.oracle.OracleConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "10.10.20.33",
+    "database.port": "1521",
+    "database.user": "C##IOB1",
+    "database.password": "Sruj@n13",
+    "database.dbname": "ORCLCDB",
+    "database.pdb.name": "ORCLPDB1",
+    "database.service.name": "ORCLPDB1",
+
+    "snapshot.mode": "initial",
+    "log.mining.strategy": "online_catalog",
+    "lob.enabled": "true",
+    "poll.interval.ms": "500",
+    "log.mining.buffer.type": "memory",
+    "table.include.list": "C##IOB1.BRMAST,C##IOB1.ROMAST,C##IOB1.TBNK_CIF,C##IOB1.TBNK_ACCNTS",
+    "database.history.store.only.captured.tables.ddl": "false",
+    "include.schema.changes": "true",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false",
+    "consumer.auto.offset.reset": "earliest",
+  }
+}
