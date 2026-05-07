@@ -1,0 +1,160 @@
+#!/bin/bash
+# accnts.sh — CDC ingestion for TBNK_ACCNTS (correct columns)
+CLICKHOUSE_HOST="192.168.80.130"
+CLICKHOUSE_PORT="9000"
+USER="admin"
+PASSWORD="Sruj@n13"
+
+clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT" --user="$USER" --password="$PASSWORD" --multiquery <<'EOSQL'
+
+-- 1) Target table: ReplacingMergeTree with updated_at for versioning
+CREATE TABLE IF NOT EXISTS IOB1."TBNK_ACCNTS" ON CLUSTER default
+(
+    TXN_ID String,
+    REQ_REF String,
+    BANKREF String,
+    REQUESTID String,
+    USERID String,
+    MAKERID String,
+    CHECKERID String,
+    CUSTOMERID String,
+    SCHMCODE String,
+    CRNCYCODE String,
+    SOLID String,
+    MODEOFOPERATION String,
+    LOG_TIME String,
+    TXN_DT String,
+    STATUS String,
+    SERVTYPE String,
+    SCHEMETYPE String,
+
+    updated_at DateTime,
+    _deleted UInt8 DEFAULT 0
+)
+ENGINE = ReplicatedReplacingMergeTree(
+    '/clickhouse/tables/{shard}/{database}/{table}',
+    '{replica}',
+    updated_at
+)
+ORDER BY TXN_ID;
+
+-- 2) Kafka engine table (Debezium envelope)
+CREATE TABLE IF NOT EXISTS IOB1."TBNK_ACCNTS_KAFKA" ON CLUSTER default
+(
+    before JSON,
+    after JSON,
+    op String,
+    ts_ms UInt64
+)
+ENGINE = Kafka
+SETTINGS
+    kafka_broker_list   = '192.168.80.130:9094,192.168.80.131:9094',
+    kafka_topic_list    = 'test296.C__IOB1.TBNK_ACCNTS',
+    kafka_group_name    = 'TBNK_ACCNTS_011',
+    kafka_format        = 'JSONEachRow',
+    kafka_num_consumers = 2;
+
+-- 3) Materialized View: handle insert/update/delete properly
+CREATE MATERIALIZED VIEW IF NOT EXISTS IOB1."TBNK_ACCNTS_MV" ON CLUSTER default
+TO IOB1."TBNK_ACCNTS"
+AS
+SELECT
+    -- use before for deletes (after is null for deletes), else use after
+    if(op = 'd',
+       JSONExtractString(toString(before), 'TXN_ID'),
+       JSONExtractString(toString(after), 'TXN_ID')
+    ) AS TXN_ID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'REQ_REF'),
+       JSONExtractString(toString(after), 'REQ_REF')
+    ) AS REQ_REF,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'BANKREF'),
+       JSONExtractString(toString(after), 'BANKREF')
+    ) AS BANKREF,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'REQUESTID'),
+       JSONExtractString(toString(after), 'REQUESTID')
+    ) AS REQUESTID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'USERID'),
+       JSONExtractString(toString(after), 'USERID')
+    ) AS USERID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'MAKERID'),
+       JSONExtractString(toString(after), 'MAKERID')
+    ) AS MAKERID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'CHECKERID'),
+       JSONExtractString(toString(after), 'CHECKERID')
+    ) AS CHECKERID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'CUSTOMERID'),
+       JSONExtractString(toString(after), 'CUSTOMERID')
+    ) AS CUSTOMERID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'SCHMCODE'),
+       JSONExtractString(toString(after), 'SCHMCODE')
+    ) AS SCHMCODE,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'CRNCYCODE'),
+       JSONExtractString(toString(after), 'CRNCYCODE')
+    ) AS CRNCYCODE,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'SOLID'),
+       JSONExtractString(toString(after), 'SOLID')
+    ) AS SOLID,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'MODEOFOPERATION'),
+       JSONExtractString(toString(after), 'MODEOFOPERATION')
+    ) AS MODEOFOPERATION,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'LOG_TIME'),
+       JSONExtractString(toString(after), 'LOG_TIME')
+    ) AS LOG_TIME,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'TXN_DT'),
+       JSONExtractString(toString(after), 'TXN_DT')
+    ) AS TXN_DT,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'STATUS'),
+       JSONExtractString(toString(after), 'STATUS')
+    ) AS STATUS,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'SERVTYPE'),
+       JSONExtractString(toString(after), 'SERVTYPE')
+    ) AS SERVTYPE,
+
+    if(op = 'd',
+       JSONExtractString(toString(before), 'SCHEMETYPE'),
+       JSONExtractString(toString(after), 'SCHEMETYPE')
+    ) AS SCHEMETYPE,
+
+    -- version column derived from ts_ms
+    if(ts_ms > 0, toDateTime(intDiv(ts_ms, 1000)), now()) AS updated_at,
+
+    -- mark deletes
+    if(op = 'd', 1, 0) AS _deleted
+
+FROM IOB1."TBNK_ACCNTS_KAFKA";
+
+
+
+EOSQL
+
+echo "✅ ACCNTS CDC ingestion pipeline created (accurate columns, full CDC)."
