@@ -1,0 +1,208 @@
+---
+- name: Destructive Master Cleanup (Wipe Kafka, ClickHouse & Streamlit)
+  hosts: all
+  gather_facts: true
+  become: true
+
+  vars:
+    workspace_dir: "/var/lib/jenkins/workspace/CP-8_setup"
+    project_profile: "cp-8"
+
+  tasks:
+
+    # ----------------------------------------------------
+    # STAGE 1: SAFETY CHECK & INIT
+    # ----------------------------------------------------
+    - name: 1. Print targeting details for destructive verification
+      ansible.builtin.debug:
+        msg:
+          - "===== STARTING DESTRUCTIVE MASTER CLEANUP ====="
+          - "Target Profile : {{ project_profile }}"
+          - "Workspace Path : {{ workspace_dir }}"
+          - "OS Family      : {{ ansible_os_family }}"
+          - "NOTE: Flink, osdata, osdata2 volumes will NOT be touched"
+
+    # ----------------------------------------------------
+    # STAGE 2: STOP & REMOVE DOCKER STACKS
+    # ----------------------------------------------------
+    - name: 2a. Check if workspace path exists
+      ansible.builtin.stat:
+        path: "{{ workspace_dir }}"
+      register: workspace_stat
+
+    - name: 2b. Warn if workspace missing (compose teardown will be skipped)
+      ansible.builtin.debug:
+        msg: "WARNING: Workspace '{{ workspace_dir }}' not found — skipping compose teardowns, proceeding with force cleanup."
+      when: not workspace_stat.stat.exists
+
+    - name: 3. Teardown ClickHouse and Keeper compose stack with storage volumes
+      ansible.builtin.shell: "docker compose -f docker-compose.yml down -v --remove-orphans"
+      args:
+        chdir: "{{ workspace_dir }}"
+      when: workspace_stat.stat.exists
+      ignore_errors: true
+
+    - name: 4. Teardown Kafka Cluster compose stack with storage volumes
+      ansible.builtin.shell: "docker compose -p {{ project_profile }} -f cp.yml down -v --remove-orphans"
+      args:
+        chdir: "{{ workspace_dir }}"
+      when: workspace_stat.stat.exists
+      ignore_errors: true
+
+    - name: 5. Teardown Confluent Control Center stack with storage volumes
+      ansible.builtin.shell: "docker compose -f c3.yml down -v --remove-orphans"
+      args:
+        chdir: "{{ workspace_dir }}"
+      when: workspace_stat.stat.exists
+      ignore_errors: true
+
+    # ----------------------------------------------------
+    # STAGE 3: FORCE PURGE LINGERING CONTAINERS
+    # ----------------------------------------------------
+    - name: 6. Force purge lingering Kafka containers
+      ansible.builtin.shell: "docker rm -f {{ item }} 2>/dev/null || true"
+      loop:
+        - broker-1
+        - broker-2
+        - broker-3
+        - schema-registry
+        - connect
+        - control-center
+      changed_when: false
+
+    - name: 7. Force purge lingering ClickHouse, Keeper & Streamlit containers
+      ansible.builtin.shell: "docker rm -f {{ item }} 2>/dev/null || true"
+      loop:
+        - clickhouse1
+        - clickhouse2
+        - clickhouse3
+        - keeper1
+        - keeper2
+        - keeper3
+        - streamlit-app
+        - iob-dashboard
+      changed_when: false
+
+    # ----------------------------------------------------
+    # STAGE 4: REMOVE DOCKER NETWORKS
+    # ----------------------------------------------------
+    - name: 8. Delete dedicated Docker network bridges
+      ansible.builtin.shell: "docker network rm {{ item }} 2>/dev/null || true"
+      loop:
+        - giniminds-bridge
+        - clickhouse_ch-net
+        - ch-net
+      changed_when: false
+
+    # ----------------------------------------------------
+    # STAGE 5: STOP & PURGE NATIVE OS SERVICES
+    # ----------------------------------------------------
+    - name: 9. Stop and disable host level daemon services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - kafka
+        - clickhouse-server
+        - streamlit
+      ignore_errors: true
+
+    - name: 10. Purge system packages on Debian/Ubuntu (APT)
+      ansible.builtin.apt:
+        name:
+          - clickhouse-server
+          - clickhouse-client
+          - kafka
+        state: absent
+        purge: true
+        autoremove: true
+      when: ansible_os_family == "Debian"
+      ignore_errors: true
+
+    - name: 11. Purge system packages on RHEL/CentOS (DNF/YUM)
+      ansible.builtin.dnf:
+        name:
+          - clickhouse-server
+          - clickhouse-client
+          - kafka
+        state: absent
+        autoremove: true
+      when: ansible_os_family == "RedHat"
+      ignore_errors: true
+
+    # ----------------------------------------------------
+    # STAGE 6: WIPE HOST DATA & CONFIG PATHS
+    # ----------------------------------------------------
+    - name: 12. Permanently wipe Kafka & ClickHouse data and config paths
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/kafka
+        - /var/lib/kafka
+        - /tmp/kafka-logs
+        - /etc/clickhouse-server
+        - /var/lib/clickhouse
+        - /var/log/clickhouse-server
+        - /var/www/streamlit
+        - /root/.streamlit
+
+    - name: 13. Wipe Jenkins workspace folder
+      ansible.builtin.file:
+        path: "{{ workspace_dir }}"
+        state: absent
+
+    # ----------------------------------------------------
+    # STAGE 7: EXPLICIT NAMED VOLUME REMOVAL
+    #          ONLY ClickHouse & Kafka — Flink/osdata/osdata2 are SKIPPED
+    # ----------------------------------------------------
+    - name: 14. Explicitly remove ClickHouse named volumes
+      ansible.builtin.shell: "docker volume rm {{ item }} 2>/dev/null || true"
+      loop:
+        - clickhouse_ch1_data
+        - clickhouse_ch2_data
+        - clickhouse_ch3_data
+      changed_when: false
+
+    - name: 15. Explicitly remove Kafka/Confluent named volumes
+      ansible.builtin.shell: "docker volume rm {{ item }} 2>/dev/null || true"
+      loop:
+        - cp-broker1-data
+        - cp-broker2-data
+        - cp-broker3-data
+      changed_when: false
+
+    - name: 16. Prune anonymous/dangling volumes (leaves all named volumes alone)
+      ansible.builtin.shell: "docker volume prune -f"
+      register: prune_output
+      changed_when: "'Total reclaimed space: 0B' not in prune_output.stdout"
+
+    - name: 17. Show volume prune results
+      ansible.builtin.debug:
+        var: prune_output.stdout_lines
+
+    # ----------------------------------------------------
+    # STAGE 8: FINAL AUDIT
+    # ----------------------------------------------------
+    - name: 18. Final audit — remaining Docker volumes
+      ansible.builtin.command: docker volume ls
+      register: remaining_volumes
+      changed_when: false
+
+    - name: 19. Final audit — remaining Docker containers
+      ansible.builtin.shell: "docker ps -a --format 'table {% raw %}{{.Names}}\t{{.Status}}{% endraw %}'"
+      register: remaining_containers
+      changed_when: false
+
+    - name: 20. Show final audit results
+      ansible.builtin.debug:
+        msg:
+          - "--- Remaining Storage Volumes (Flink/osdata should still be here) ---"
+          - "{{ remaining_volumes.stdout_lines }}"
+          - "--- Remaining Containers ---"
+          - "{{ remaining_containers.stdout_lines }}"
+
+    - name: "===== CLEANUP COMPLETE ====="
+      ansible.builtin.debug:
+        msg: "Kafka & ClickHouse teardown done on {{ inventory_hostname }}. Flink and osdata volumes preserved."
