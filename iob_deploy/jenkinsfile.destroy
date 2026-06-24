@@ -1,0 +1,26 @@
+pipeline {
+    agent any
+    stages {
+        stage('Destroy Platform') {
+            steps {
+                echo '=== Destroying Kafka, ClickHouse & Streamlit ==='
+                
+                // Using sshagent block to inject the key
+                sshagent(credentials: ['32_creds']) {
+                    // Added ssh-add -l to print the loaded key identities into your logs for verification
+                    sh '''
+                        echo "--- Verifying loaded SSH keys ---"
+                        ssh-add -l || echo "No keys found in agent"
+                        
+                        echo "--- Running remote Ansible Playbook ---"
+                        ssh -o StrictHostKeyChecking=no root@10.10.20.32 "ansible-playbook -i /root/iob_deploy/inventory /root/iob_deploy/destroy-platform.yml"
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success { echo '✅ Platform destroyed successfully' }
+        failure { echo '❌ Destroy failed — check logs' }
+    }
+}
